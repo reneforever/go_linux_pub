@@ -4,38 +4,50 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/hpcloud/tail"
+	"github.com/reneforever/conf"
+	"github.com/reneforever/kafka"
+	"github.com/reneforever/taillog"
+	"gopkg.in/ini.v1"
 )
 
-func main() {
-	fileName := "./my.log"
+// logAgent入口
 
-	config := tail.Config{
-		ReOpen:    true,                                 //重新打开
-		Follow:    true,                                 //是否跟随上一个日志文件
-		Location:  &tail.SeekInfo{Offset: 0, Whence: 2}, //从文件哪里开始读
-		MustExist: false,                                //文件不存在不报错
-		Poll:      true,                                 //轮询文件的修改
+var (
+	cfg *conf.AppConf
+)
+
+func run(topic string) {
+	// 1.读取日志
+	for {
+		// 2.发送到kafka
+		select {
+		case line := <-taillog.ReadLogChan():
+			kafka.SendToKafka(topic, line.Text)
+		default:
+			time.Sleep(time.Second)
+		}
 	}
+}
 
-	tails, err := tail.TailFile(fileName, config)
-
-	if err != nil {
-		fmt.Println("tail file failed, err:", err)
+func main() {
+	// 0. 加载配置文件
+	cfg, iniErr := ini.Load("./conf/config.ini")
+	if iniErr != nil {
+		fmt.Println("ini load failed, err: ", iniErr)
 		return
 	}
-
-	var (
-		line *tail.Line
-		ok   bool
-	)
-	for {
-		line, ok = <-tails.Lines
-		if !ok {
-			fmt.Printf("tail file close reopen, filename:%s\n", tails.Filename)
-			time.Sleep(time.Second)
-			continue
-		}
-		fmt.Println("line:", line.Text)
+	// cfg.Section("kafka").Key("address")
+	// 1. 初始化kafka连接
+	kafkaErr := kafka.Init([]string{cfg.Section("kafka").Key("address").String()})
+	if kafkaErr != nil {
+		fmt.Println("init kafka failed, err: ", kafkaErr)
+		return
 	}
+	// 2. 打开日志文件准备收集
+	tailErr := taillog.Init(cfg.Section("taillog").Key("path").String())
+	if tailErr != nil {
+		fmt.Println("read log file failed, err: ", tailErr)
+		return
+	}
+	run(cfg.Section("kafka").Key("topic").String())
 }
